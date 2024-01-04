@@ -34,7 +34,7 @@ import re
 from pathlib import Path
 from typing import List, Set, Tuple
 from urllib import parse
-
+import subprocess
 import requests
 
 from mycroft.util.file_utils import (
@@ -43,20 +43,47 @@ from mycroft.util.file_utils import (
 from mycroft.util.log import LOG
 
 
-def _get_mimic2_audio(sentence: str, url: str) -> Tuple[bytes, str]:
-    """Use the Mimic2 API to retrieve the audio for a sentence.
+def _get_local_mimic_audio(sentence: str, mimic_binary_path: str) -> Tuple[bytes, str]:
+    """Use the local Mimic binary to generate audio for a sentence.
 
     Args:
         sentence: The sentence to be cached
+        mimic_binary_path: The path to the local Mimic binary
     """
-    LOG.debug("Retrieving Mimic2 audio for sentence \"{}\'".format(sentence))
-    mimic2_url = url + parse.quote(sentence) + '&visimes=True'
-    response = requests.get(mimic2_url)
-    response_data = response.json()
-    audio = base64.b64decode(response_data["audio_base64"])
-    phonemes = response_data["visimes"]
+    LOG.debug("Generating audio with local Mimic for sentence \"{}\"".format(sentence))
+    command = [mimic_binary_path, "-t", sentence, "-o", "/tmp/audio/sentence.wav"]
+    
+    # Run Mimic command
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError:
+        LOG.exception("Failed to generate audio with local Mimic for sentence \"{}\"".format(sentence))
+        return None, None
+
+    # Read the generated audio file
+    audio_path = "/tmp/audio/sentence.wav"
+    with open(audio_path, "rb") as audio_file:
+        audio = audio_file.read()
+
+    # For the sake of demonstration, assuming phonemes are not available locally
+    phonemes = None
 
     return audio, phonemes
+
+# def _get_mimic2_audio(sentence: str, url: str) -> Tuple[bytes, str]:
+#     """Use the Mimic2 API to retrieve the audio for a sentence.
+
+#     Args:
+#         sentence: The sentence to be cached
+#     """
+#     LOG.debug("Retrieving Mimic2 audio for sentence \"{}\'".format(sentence))
+#     mimic2_url = url + parse.quote(sentence) + '&visimes=True'
+#     response = requests.get(mimic2_url)
+#     response_data = response.json()
+#     audio = base64.b64decode(response_data["audio_base64"])
+#     phonemes = response_data["visimes"]
+
+#     return audio, phonemes
 
 
 def hash_sentence(sentence: str):
@@ -260,27 +287,43 @@ class TextToSpeechCache:
         return sentences
 
     def _load_sentence(self, sentence: str):
-        """Build audio and phoneme files for each sentence to be cached.
-
-        Perform TTS inference on sentences parsed from dialog files.  Store
-        the results in the persistent cache directory.
-
-        ASSUMPTION: The only TTS that supports persistent cache right now is
-        Mimic2.  This method assumes a call to the Mimic2 API.  If other TTS
-        engines want to take advantage of the persistent cache, this logic
-        will need to be more dynamic.
-        """
+        """Build audio and phoneme files for each sentence to be cached."""
         sentence_hash = hash_sentence(sentence)
         if sentence_hash not in self.cached_sentences:
             LOG.info("Adding \"{}\" to cache".format(sentence))
             try:
-                mimic2_url = self.config["url"]
-                audio, phonemes = _get_mimic2_audio(sentence, mimic2_url)
+                mimic_binary_path = self.config["path"] or "/home/joeca/mycroft-core/mimic/bin/mimic"
+                LOG.info(f'mimic_binary_path = {self.config["path"]}')
+                audio, phonemes = _get_local_mimic_audio(sentence, mimic_binary_path)
             except Exception:
                 log_msg = "Failed to get audio for sentence \"{}\""
                 LOG.exception(log_msg.format(sentence))
             else:
                 self._add_to_persistent_cache(sentence_hash, audio, phonemes)
+
+
+    # def _load_sentence(self, sentence: str):
+    #     """Build audio and phoneme files for each sentence to be cached.
+
+    #     Perform TTS inference on sentences parsed from dialog files.  Store
+    #     the results in the persistent cache directory.
+
+    #     ASSUMPTION: The only TTS that supports persistent cache right now is
+    #     Mimic2.  This method assumes a call to the Mimic2 API.  If other TTS
+    #     engines want to take advantage of the persistent cache, this logic
+    #     will need to be more dynamic.
+    #     """
+    #     sentence_hash = hash_sentence(sentence)
+    #     if sentence_hash not in self.cached_sentences:
+    #         LOG.info("Adding \"{}\" to cache".format(sentence))
+    #         try:
+    #             mimic2_url = self.config["url"]
+    #             audio, phonemes = _get_mimic2_audio(sentence, mimic2_url)
+    #         except Exception:
+    #             log_msg = "Failed to get audio for sentence \"{}\""
+    #             LOG.exception(log_msg.format(sentence))
+    #         else:
+    #             self._add_to_persistent_cache(sentence_hash, audio, phonemes)
 
     def _add_to_persistent_cache(
             self, sentence_hash: str, audio: bytes, phonemes: str
